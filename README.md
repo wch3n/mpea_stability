@@ -1,1 +1,1 @@
-# mpea_stability
+# Phase stability prediction for multicomponent alloys
