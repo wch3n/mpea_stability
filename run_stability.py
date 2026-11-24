@@ -135,6 +135,15 @@ def predict(formulas, t_fac, temperature=-1, expt_phase=None, file_out=None, npr
         res = pool.starmap(func, zip(formulas, expt_phase))
     return res
 
+def hull_energy(diagram, candidates):
+    """Return the signed hull energy of the target solid solution in eV/atom."""
+    for entry in candidates:
+        if entry in diagram.stable_entries:
+            return diagram.get_equilibrium_reaction_energy(entry), "stable"
+    lowest = min(candidates, key=lambda entry: entry.energy_per_atom)
+    return diagram.get_e_above_hull(lowest), "unstable"
+
+
 def model(t_fac, temperature, omegas, im, cost, hmix_m, im_eform, file_out, formula, expt_phase):
     time_0 = default_timer()
     comp_raw = Composition(formula)
@@ -158,34 +167,22 @@ def model(t_fac, temperature, omegas, im, cost, hmix_m, im_eform, file_out, form
             chemsys = "-".join(sorted([x.symbol for x in combi]))
             chemsys_list.append(chemsys)
     entries=[]
-    for j in chemsys_list:
-        entries.extend(compute_ss_equimolar(omegas,j,t))
-
-    # for non-equimolar alloy
-    equimolar = is_equimolar(comp)
-    if not equimolar:
-        entries_target, conf_entropy = compute_ss(omegas, comp, t)
-        entries.extend(entries_target)
-    else:
+    # Combinations are ordered by size, with the full system last.
+    for j in chemsys_list[:-1]:
+        entries.extend(compute_ss_equimolar(omegas, j, t))
+    candidates = compute_ss_equimolar(omegas, chemsys_list[-1], t)
+    entries.extend(candidates)
+    if is_equimolar(comp):
         conf_entropy = -K*t*log(ncomp)
-    
-    # convex hull analysis
-    pd_ss=PhaseDiagram(entries)
-    stability="unstable"
-    for e in pd_ss.stable_entries:
-        if e.composition.fractional_composition == comp:
-            e_above=pd_ss.get_equilibrium_reaction_energy(e)
-            stability="stable"
-    for e in pd_ss.all_entries:
-        if e.composition.fractional_composition == comp:
-            if e.name == "SS_BCC":
-                bcc_energy = e.energy_per_atom
-            if e.name == "SS_FCC":
-                fcc_energy = e.energy_per_atom
-            if e.name == "SS_HCP":
-                hcp_energy = e.energy_per_atom
-            if stability == "unstable":
-                e_above=pd_ss.get_e_above_hull(e)
+    else:
+        candidates, conf_entropy = compute_ss(omegas, comp, t)
+        entries.extend(candidates)
+
+    energies = {e.name: e.energy_per_atom for e in candidates}
+    bcc_energy = energies["SS_BCC"]
+    fcc_energy = energies["SS_FCC"]
+    hcp_energy = energies["SS_HCP"]
+    e_above, _ = hull_energy(PhaseDiagram(entries), candidates)
 
     # now include the IM up to ternary
     for j in chemsys_list:
@@ -195,14 +192,7 @@ def model(t_fac, temperature, omegas, im, cost, hmix_m, im_eform, file_out, form
                 im_name = Composition(r['unit_cell_formula']).reduced_formula+"_"+r["type_im"]
                 entries.append(PDEntry(r['unit_cell_formula'], im_energy, name=im_name))
     pd_im=PhaseDiagram(entries)
-    stability_im="unstable"
-    for e in pd_im.stable_entries:
-        if e.composition.fractional_composition == comp and is_ss(e):
-            e_above_im=pd_im.get_equilibrium_reaction_energy(e)
-            stability_im="stable"
-    for e in pd_im.all_entries:
-        if (e.composition.fractional_composition == comp) and is_ss(e) and (stability_im == "unstable"): 
-            e_above_im=pd_im.get_e_above_hull(e)
+    e_above_im, stability_im = hull_energy(pd_im, candidates)
 
     res_m1, res_m2, res_m3, res_m4, res_m6, res_m7 = model_others(comp, hmix_m, tm, t, im_eform)
 
